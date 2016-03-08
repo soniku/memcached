@@ -189,6 +189,7 @@ to_list(Key) when is_list(Key) ->
 
 fetch_more(Socket, Len, More) ->
   %% Read what we need to grab the data.
+  %io:format("~ts~n",[lists:flatten([" Len: ", Len, " More: ", binary_to_list(More)])]),
   {ok, <<Data/binary>>} = gen_tcp:recv(Socket, Len - size(More)),
   Combined = <<More/binary, Data/binary>>,
   if
@@ -202,25 +203,53 @@ fetch_more(Socket, Len, More) ->
       {Bytes, Rest}
   end.
 
+response(Socket, MemcacheKey, Len, More, Acc) ->
+    if
+	%% 5 is size(<<"\r\nEND\r\n">>)
+	length(More) < (Len + 7) ->
+	    %% If we didnt' read all the data, fetch the rest
+	    {Bytes, Rest} = fetch_more(Socket, Len, list_to_binary(More)),
+	    parse_responses(Socket, Rest, Acc ++ [{MemcacheKey, b2t(Bytes)}]);
+	true ->
+	    <<Bytes:Len/binary, Rest/binary>> = list_to_binary(More),
+	    parse_responses(Socket, Rest, Acc ++ [{MemcacheKey, b2t(Bytes)}])
+    end.
 
 parse_responses(Socket, <<"\r\n", Data/binary>>, Acc) ->
   parse_responses(Socket, Data, Acc);
 parse_responses(Socket, <<"VALUE ", Data/binary>>, Acc) ->
-  {ok, [MemcacheKey, _, Len], More} = io_lib:fread("~s ~u ~u\r\n", binary_to_list(Data)),
-  if
-    %% 5 is size(<<"\r\nEND\r\n">>)
-    length(More) < (Len + 7) ->
-      %% If we didnt' read all the data, fetch the rest
-      {Bytes, Rest} = fetch_more(Socket, Len, list_to_binary(More)),
-      parse_responses(Socket, Rest, Acc ++ [{MemcacheKey, b2t(Bytes)}]);
-    true ->
-	  <<Bytes:Len/binary, Rest/binary>> = list_to_binary(More),
-	  parse_responses(Socket, Rest, Acc ++ [{MemcacheKey, b2t(Bytes)}])
+  %erlang:display("Mr Data"),
+  %erlang:display(binary_to_list(Data)),
+  case io_lib:fread("~s ~u ~u\r\n", binary_to_list(Data)) of
+      {ok, [MemcacheKey, _, Len], More} ->
+	  response(Socket, MemcacheKey, Len, More, Acc);
+      {error, What} ->
+	  erlang:display("What"),
+	  erlang:display(What);
+      _ ->
+	  case io_lib:fread("~s ~u ~u\n", binary_to_list(Data)) of
+	      {ok, [MemcacheKey, _, Len], More} ->
+		  response(Socket, MemcacheKey, Len, More, Acc);
+	      {error, What} ->
+		  erlang:display("What"),
+		  erlang:display(What);
+	      Huh2 ->
+		  erlang:display("Huh"),
+		  erlang:display(Huh2)
+          end
   end;
+  %erlang:display("Memcached Key:"),
+  %erlang:display(MemcacheKey),
+  %erlang:display(More),
+  
 %% Parse the get response
 parse_responses(_Socket, <<"END\r\n", _Rest/binary>>, Acc) ->
+    erlang:display("rn response"),
+    erlang:display(_Rest),
     {ok,Acc};
 parse_responses(_Socket, _Unrecognized, _Acc) ->
+    erlang:display("Unreco"),
+    erlang:display(binary_to_list(_Unrecognized)),
     mismatch_error.
 
 
@@ -236,6 +265,8 @@ process_get(Socket, Keys) ->
   KeyList = [to_list(X) || X <- Keys],
   ok = gen_tcp:send(Socket, list_to_binary(["get ", string:join(KeyList, " "), "\r\n"])),
   {ok, <<Data/binary>>} = gen_tcp:recv(Socket, 0),
+    erlang:display("Raw data"),
+    erlang:display(Data),
   parse_responses(Socket, Data, []).
 
 %% Send set and handle the response
